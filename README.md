@@ -16,7 +16,7 @@ This project is built using:
 1. Clone the project
 2. Install dependencies:
    ```sh
-   pip install -r requirements
+   pip install -r requirements.txt
    ```
 3. Make a new directory `.streamlit` and move `secrets.example.toml` there
 4. Rename the file to `secrets.toml`, and edit the values inside to your own values
