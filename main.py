@@ -63,13 +63,13 @@ if st.session_state["authentication_status"]:
     owned_sets = pd.DataFrame(set_inv, columns=["name", "characters", "claimed"])
 
     chars_list = pd.merge(characters, owned_chars, on="character_name", how="left")
-    chars_list.owned.fillna(False, inplace=True)
+    chars_list.owned = chars_list.owned.fillna(False)
     mats_list = pd.merge(materials, owned_mats, on="name", how="left")
-    mats_list.quantity.fillna(0, inplace=True)
+    mats_list.quantity = mats_list.quantity.fillna(0)
     furn_list = pd.merge(furnishings, owned_furn, on="name", how="left")
-    furn_list.quantity.fillna(0, inplace=True)
+    furn_list.quantity = furn_list.quantity.fillna(0)
     sets_list = pd.merge(sets, owned_sets, on=["name", "characters"], how="left")
-    sets_list.claimed.fillna(False, inplace=True)
+    sets_list.claimed = sets_list.claimed.fillna(False)
 
     st.title("Genshin Furnishing Helper")
     st.write(
@@ -242,7 +242,7 @@ if st.session_state["authentication_status"]:
             # Create a new DataFrame with only the 'material_name', 'recipe', and 'amount' columns
             needed_furns = needed_furns[["material_name", "recipe", "amount"]]
             idx = (
-                needed_furns.groupby("material_name")["amount"].transform(max)
+                needed_furns.groupby("material_name")["amount"].transform("max")
                 == needed_furns["amount"]
             )
             needed_furns = needed_furns[idx]
@@ -260,6 +260,8 @@ if st.session_state["authentication_status"]:
             needed_furns = needed_furns[
                 needed_furns["amount"] >= needed_furns["quantity"]
             ]
+            needed_furns["amount"] = needed_furns["amount"] - needed_furns["quantity"]
+            needed_furns = needed_furns[needed_furns["amount"] > 0]
 
             mask = needed_furns["recipe"].apply(lambda x: x == [])
             buy_furns = needed_furns[mask]
@@ -288,8 +290,16 @@ if st.session_state["authentication_status"]:
                 needed_mats[["name", "quantity"]].groupby("name").sum("quantity")
             )
 
+            needed_mats = needed_mats.merge(
+                mat_df, on="name", suffixes=("_needed", "_mat")
+            )
+            needed_mats["quantity_diff"] = (
+                needed_mats["quantity_needed"] - needed_mats["quantity_mat"]
+            )
+            needed_mats = needed_mats[needed_mats["quantity_diff"] > 0]
+
             st.subheader("Materials needed:")
-            st.dataframe(needed_mats)
+            st.dataframe(needed_mats[["name", "quantity_diff"]].reset_index(drop=True))
 
 
 elif st.session_state["authentication_status"] is False:
