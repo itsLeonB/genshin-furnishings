@@ -10,6 +10,7 @@ This project is built using:
 - Pandas
 - MongoDB
 - Streamlit
+- Firebase (for authentication)
 
 ## Local Deployment
 
@@ -20,7 +21,8 @@ This project is built using:
    ```
 3. Make a new directory `.streamlit` and move `secrets.example.toml` there
 4. Rename the file to `secrets.toml`, and edit the values inside to your own values
-5. Start the Streamlit server:
+5. Make sure your Firebase project has the Authentication enabled
+6. Start the Streamlit server:
    ```sh
    streamlit run main.py
    ```
