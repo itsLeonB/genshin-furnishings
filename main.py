@@ -1,80 +1,65 @@
-import pandas as pd
+import auth
 import streamlit as st
-import streamlit_authenticator as stauth
-from pymongo.server_api import ServerApi
-from pymongo.mongo_client import MongoClient
+import data_controller as data
 
 
-# Initialize connection.
-# Uses st.cache_resource to only run once.
-@st.cache_resource
-def init_connection():
-    return MongoClient(st.secrets["mongo"]["uri"], server_api=ServerApi("1"))
-
-
-client = init_connection()
+client = data.init_connection()
 db = client.furnishings
-credentials = list(db.usernames.find())
 
-
-def transform_users(users):
-    result = {"usernames": {}}
-    for user in users:
-        username = user.pop("username")
-        result["usernames"][username] = user
-    return result
-
-
-credentials = transform_users(credentials)
-
-authenticator = stauth.Authenticate(
-    credentials,
-    st.secrets["cookie"]["name"],
-    st.secrets["cookie"]["key"],
+st.title("Genshin Furnishing Helper")
+st.write(
+    "This app helps to identify needed furnishings to craft/buy and materials required for claiming gift sets."
 )
 
-authenticator.login()
-
-if st.session_state["authentication_status"]:
-    characters = pd.DataFrame(db.characters.find({}, {"character_name": 1, "_id": 0}))
-    materials = pd.DataFrame(db.materials.find({}, {"name": 1, "_id": 0}))
-    furnishings = pd.DataFrame(db.furnishings.find({}, {"name": 1, "_id": 0}))
-    sets = pd.DataFrame(db.sets.find({}, {"name": 1, "characters": 1, "_id": 0}))
-    sets = sets.explode("characters")
-    sets = sets.sort_values("name")
-
-    inventory = db.inventory
-    user_inventory = inventory.find_one({"username": st.session_state["username"]})
-
-    owned_chars = pd.DataFrame(
-        list(user_inventory["characters"].items()), columns=["character_name", "owned"]
+if "user_info" not in st.session_state:
+    # col1, col2, col3 = st.columns([1, 2, 1])
+    st.divider()
+    # Authentication form layout
+    do_you_have_an_account = st.selectbox(
+        label="Do you have an account?", options=("Yes", "No", "I forgot my password")
     )
-    owned_mats = pd.DataFrame(
-        list(user_inventory["materials"].items()), columns=["name", "quantity"]
+    auth_form = st.form(key="Authentication form", clear_on_submit=False)
+    email = auth_form.text_input(label="Email")
+    password = (
+        auth_form.text_input(label="Password", type="password")
+        if do_you_have_an_account in {"Yes", "No"}
+        else auth_form.empty()
     )
-    owned_furn = pd.DataFrame(
-        list(user_inventory["furnishings"].items()), columns=["name", "quantity"]
-    )
-    owned_sets = user_inventory["sets"]
-    set_inv = []
-    for set in owned_sets:
-        for character, claimed in set["characters"].items():
-            set_inv.append([set["name"], character, claimed])
-    owned_sets = pd.DataFrame(set_inv, columns=["name", "characters", "claimed"])
+    auth_notification = st.empty()
 
-    chars_list = pd.merge(characters, owned_chars, on="character_name", how="left")
-    chars_list.owned = chars_list.owned.fillna(False)
-    mats_list = pd.merge(materials, owned_mats, on="name", how="left")
-    mats_list.quantity = mats_list.quantity.fillna(0)
-    furn_list = pd.merge(furnishings, owned_furn, on="name", how="left")
-    furn_list.quantity = furn_list.quantity.fillna(0)
-    sets_list = pd.merge(sets, owned_sets, on=["name", "characters"], how="left")
-    sets_list.claimed = sets_list.claimed.fillna(False)
+    # Sign In
+    if do_you_have_an_account == "Yes" and auth_form.form_submit_button(
+        label="Sign In", use_container_width=True, type="primary"
+    ):
+        with auth_notification, st.spinner("Signing in"):
+            auth.sign_in(email, password)
 
-    st.title("Genshin Furnishing Helper")
-    st.write(
-        "This app helps to identify needed furnishings to craft/buy and materials required for claiming gift sets."
-    )
+    # Create Account
+    elif do_you_have_an_account == "No" and auth_form.form_submit_button(
+        label="Create Account", use_container_width=True, type="primary"
+    ):
+        with auth_notification, st.spinner("Creating account"):
+            auth.create_account(email, password)
+
+    # Password Reset
+    elif (
+        do_you_have_an_account == "I forgot my password"
+        and auth_form.form_submit_button(
+            label="Send Password Reset Email", use_container_width=True, type="primary"
+        )
+    ):
+        with auth_notification, st.spinner("Sending password reset link"):
+            auth.reset_password(email)
+
+    # Authentication success and warning messages
+    if "auth_success" in st.session_state:
+        auth_notification.success(st.session_state.auth_success)
+        del st.session_state.auth_success
+    elif "auth_warning" in st.session_state:
+        auth_notification.warning(st.session_state.auth_warning)
+        del st.session_state.auth_warning
+
+else:
     st.write("Start by selecting the characters, materials, and furnishings you own.")
     st.write("Then check the gift sets you have claimed rewards for.")
     st.write(
@@ -84,6 +69,8 @@ if st.session_state["authentication_status"]:
     char_tab, mat_tab, furn_tab, sets_tab, calc_tab = st.tabs(
         ["Characters", "Materials", "Furnishings", "Sets", "Requirements"]
     )
+
+    (inventory, chars_list, mats_list, furn_list, sets_list) = data.get_data()
 
     with char_tab:
         st.header("Characters")
@@ -101,13 +88,7 @@ if st.session_state["authentication_status"]:
         )
 
         if st.button("Save changes", key="save_chars", type="primary"):
-            chars = char_df.set_index("character_name")["owned"].to_dict()
-            result = inventory.update_one(
-                {"username": st.session_state["username"]},
-                {"$set": {"characters": chars}},
-            )
-
-            if result.matched_count > 0:
+            if data.update_chars(inventory, char_df):
                 st.success("Data successfully updated!")
             else:
                 st.error("Data update failed!")
@@ -130,13 +111,7 @@ if st.session_state["authentication_status"]:
         )
 
         if st.button("Save changes", key="save_mats", type="primary"):
-            mats = mat_df.set_index("name")["quantity"].to_dict()
-            result = inventory.update_one(
-                {"username": st.session_state["username"]},
-                {"$set": {"materials": mats}},
-            )
-
-            if result.matched_count > 0:
+            if data.update_mats(inventory, mat_df):
                 st.success("Data successfully updated!")
             else:
                 st.error("Data update failed!")
@@ -159,13 +134,7 @@ if st.session_state["authentication_status"]:
         )
 
         if st.button("Save changes", key="save_furn", type="primary"):
-            furn = furn_df.set_index("name")["quantity"].to_dict()
-            result = inventory.update_one(
-                {"username": st.session_state["username"]},
-                {"$set": {"furnishings": furn}},
-            )
-
-            if result.matched_count > 0:
+            if data.update_furns(inventory, furn_df):
                 st.success("Data successfully updated!")
             else:
                 st.error("Data update failed!")
@@ -186,31 +155,7 @@ if st.session_state["authentication_status"]:
         )
 
         if st.button("Save changes", key="save_sets", type="primary"):
-            # Get unique values of 'name' column
-            unique_names = sets_df["name"].unique()
-
-            # Create the array
-            sets = []
-            for name in unique_names:
-                subset_df = sets_df[sets_df["name"] == name]
-                character_info = {
-                    char: claimed
-                    for char, claimed in zip(
-                        subset_df["characters"], subset_df["claimed"]
-                    )
-                }
-                sets.append(
-                    {
-                        "name": name,
-                        "characters": character_info,
-                    }
-                )
-
-            result = inventory.update_one(
-                {"username": st.session_state["username"]}, {"$set": {"sets": sets}}
-            )
-
-            if result.matched_count > 0:
+            if data.update_sets(inventory, sets_df):
                 st.success("Data successfully updated!")
             else:
                 st.error("Data update failed!")
@@ -218,91 +163,30 @@ if st.session_state["authentication_status"]:
     with calc_tab:
         st.header("Requirements")
         if st.button("Calculate requirements", key="calc", type="primary"):
-            owned_chars_true = char_df[char_df["owned"] == True]
-            unclaimed_sets = sets_df[sets_df["claimed"] == False]
-            unclaimed_sets = unclaimed_sets[
-                unclaimed_sets["characters"].isin(owned_chars_true["character_name"])
-            ]
-            unclaimed_sets = unclaimed_sets.name.unique().tolist()
-            gift_sets = pd.DataFrame(db.sets.find({"name": {"$in": unclaimed_sets}}))
+            reqs = data.calculate_requirements(char_df, sets_df, furn_df, mat_df, db)
 
-            needed_furns = gift_sets.explode("materials")
+            if reqs:
+                (needed_furns, buy_furns, needed_mats) = reqs
 
-            # Extract the 'name', 'recipe', and 'amount' fields from the 'materials' column
-            needed_furns["material_name"] = needed_furns["materials"].apply(
-                lambda x: x["name"]
-            )
-            needed_furns["recipe"] = needed_furns["materials"].apply(
-                lambda x: x["recipe"]
-            )
-            needed_furns["amount"] = needed_furns["materials"].apply(
-                lambda x: x["amount"]
-            )
+                cols = st.columns(2)
+                with cols[0]:
+                    st.subheader("Furnishings to buy:")
+                    st.dataframe(
+                        buy_furns[["name", "amount"]],
+                        hide_index=True,
+                    )
 
-            # Create a new DataFrame with only the 'material_name', 'recipe', and 'amount' columns
-            needed_furns = needed_furns[["material_name", "recipe", "amount"]]
-            idx = (
-                needed_furns.groupby("material_name")["amount"].transform("max")
-                == needed_furns["amount"]
-            )
-            needed_furns = needed_furns[idx]
+                    st.subheader("Materials needed:")
+                    st.dataframe(
+                        needed_mats[["name", "quantity_diff"]],
+                        hide_index=True,
+                    )
 
-            # Merge gift_sets and furn_df on 'material_name'
-            needed_furns = pd.merge(
-                needed_furns,
-                furn_df[["name", "quantity"]],
-                left_on="material_name",
-                right_on="name",
-                how="left",
-            )
-
-            # Filter rows where 'amount' is >= 'quantity'
-            needed_furns = needed_furns[
-                needed_furns["amount"] >= needed_furns["quantity"]
-            ]
-            needed_furns["amount"] = needed_furns["amount"] - needed_furns["quantity"]
-            needed_furns = needed_furns[needed_furns["amount"] > 0]
-
-            mask = needed_furns["recipe"].apply(lambda x: x == [])
-            buy_furns = needed_furns[mask]
-            needed_furns = needed_furns[~mask]
-
-            st.subheader("Furnishings to craft:")
-            st.dataframe(needed_furns[["name", "amount"]].reset_index(drop=True))
-
-            st.subheader("Furnishings to buy:")
-            st.dataframe(buy_furns[["name", "amount"]].reset_index(drop=True))
-
-            # Explode the 'recipe' column and keep the 'amount' column
-            needed_mats = needed_furns.explode("recipe").reset_index()
-
-            # Extract the 'name' and 'quantity' fields from the 'recipe' column
-            needed_mats["name"] = needed_mats["recipe"].apply(lambda x: x["name"])
-            needed_mats["quantity"] = needed_mats["recipe"].apply(
-                lambda x: x["quantity"]
-            )
-
-            # Multiply the 'quantity' by the 'amount'
-            needed_mats["quantity"] *= needed_mats["amount"]
-
-            # Select only the 'name' and 'quantity' columns
-            needed_mats = (
-                needed_mats[["name", "quantity"]].groupby("name").sum("quantity")
-            )
-
-            needed_mats = needed_mats.merge(
-                mat_df, on="name", suffixes=("_needed", "_mat")
-            )
-            needed_mats["quantity_diff"] = (
-                needed_mats["quantity_needed"] - needed_mats["quantity_mat"]
-            )
-            needed_mats = needed_mats[needed_mats["quantity_diff"] > 0]
-
-            st.subheader("Materials needed:")
-            st.dataframe(needed_mats[["name", "quantity_diff"]].reset_index(drop=True))
-
-
-elif st.session_state["authentication_status"] is False:
-    st.error("Username/password is incorrect")
-elif st.session_state["authentication_status"] is None:
-    st.warning("Please enter your username and password")
+                with cols[1]:
+                    st.subheader("Furnishings to craft:")
+                    st.dataframe(
+                        needed_furns[["name", "amount"]],
+                        hide_index=True,
+                    )
+            else:
+                st.write("There are no gift sets to claim.")
